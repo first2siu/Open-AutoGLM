@@ -693,6 +693,65 @@ def main():
     else:  # ios
         device_type = DeviceType.IOS
 
+    # Check if WebSocket mode is enabled
+    websocket_mode = os.getenv("AUTOGLEM_WEBSOCKET_MODE", "false").lower() == "true"
+
+    # Start WebSocket server if in WebSocket mode
+    if websocket_mode and device_type == DeviceType.ADB:
+        import asyncio
+        from phone_agent.websocket_server import get_server
+
+        # Start WebSocket server in background
+        ws_host = os.getenv("AUTOGLEM_WS_HOST", "0.0.0.0")
+        ws_port = int(os.getenv("AUTOGLEM_WS_PORT", "8765"))
+        ws_server = get_server(host=ws_host, port=ws_port)
+
+        # Run server in background thread
+        import threading
+
+        def run_ws_server():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(ws_server.start())
+            loop.run_forever()
+
+        ws_thread = threading.Thread(target=run_ws_server, daemon=True)
+        ws_thread.start()
+
+        print(f"🌐 WebSocket server started on {ws_host}:{ws_port}")
+        print("⏳ Waiting for mobile device to connect...")
+        print("   Run mobile_agent.py on your device to connect")
+        print()
+
+        # Wait for device connection - dynamically capture device ID
+        import time
+        max_wait = 120  # seconds (increased from 60)
+        waited = 0
+        connected_devices = []
+
+        while waited < max_wait:
+            connected_devices = ws_server.list_connected_devices()
+            if connected_devices:
+                # Auto-capture the first connected device ID
+                args.device_id = connected_devices[0]
+                print(f"✅ Device connected: {args.device_id}")
+                print()
+                break
+
+            if waited >= max_wait:
+                print("❌ Timeout: No device connected after 120 seconds")
+                print("   Please ensure mobile_agent.py is running on your device")
+                print("   Troubleshooting:")
+                print("   1. Check phone can ping server: ping 10.25.144.51")
+                print("   2. Check phone firewall settings")
+                print("   3. Verify AUTOGLM_SERVER_URL on phone")
+                sys.exit(1)
+
+            time.sleep(1)
+            waited += 1
+            if waited % 5 == 0:
+                print(f"⏳ Waiting for device... ({waited}/{max_wait}s)")
+
     # Set device type globally for non-iOS devices
     if device_type != DeviceType.IOS:
         set_device_type(device_type)
@@ -727,18 +786,23 @@ def main():
             )
         return
 
-    # Handle device commands (these may need partial system checks)
-    if handle_device_commands(args):
-        return
+    # Skip local device commands in WebSocket mode
+    # In WebSocket mode, we don't need local ADB connection
+    if not websocket_mode:
+        # Handle device commands (these may need partial system checks)
+        if handle_device_commands(args):
+            return
 
-    # Run system requirements check before proceeding
-    if not check_system_requirements(
-        device_type,
-        wda_url=args.wda_url
-        if device_type == DeviceType.IOS
-        else "http://localhost:8100",
-    ):
-        sys.exit(1)
+    # Skip system requirements check in WebSocket mode
+    if not websocket_mode:
+        # Run system requirements check before proceeding
+        if not check_system_requirements(
+            device_type,
+            wda_url=args.wda_url
+            if device_type == DeviceType.IOS
+            else "http://localhost:8100",
+        ):
+            sys.exit(1)
 
     # Check model API connectivity and model availability
     if not check_model_api(args.base_url, args.model, args.apikey):
